@@ -47,51 +47,17 @@
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 
-/* Multi-select checkbox */
-.r34dw-thumb-check {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    z-index: 50;
-    width: 22px;
-    height: 22px;
-    border-radius: 5px;
-    background: rgba(20, 20, 20, 0.6);
-    border: 2px solid rgba(255, 255, 255, 0.85);
-    cursor: pointer;
-    user-select: none;
-    -webkit-user-select: none;
-    -webkit-tap-highlight-color: transparent;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-    transition: background .15s ease, transform .1s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.r34dw-thumb-check:active { transform: scale(0.92); }
-.r34dw-thumb-check.r34dw-checked {
-    background: rgba(40, 160, 80, 0.95);
-    border-color: #fff;
-}
-.r34dw-thumb-check svg {
-    width: 16px;
-    height: 16px;
-    display: none;
-    pointer-events: none;
-}
-.r34dw-thumb-check.r34dw-checked svg { display: block; }
-
-/* Selected-thumb highlight — visible regardless of mode but most obvious in
-   multi mode. Keeps the user aware that a thumb is in their bulk queue. */
-body.r34dw-mode-multi span.thumb.r34dw-thumb-selected {
-    outline: 3px solid rgba(40, 160, 80, 0.95);
+/* Highlight the thumb that is currently being downloaded so the user can
+   see which one in the listing is in flight. Subtle blue outline — not
+   intrusive, just enough to confirm "this one is being fetched right now". */
+span.thumb.r34dw-thumb-active {
+    outline: 3px solid rgba(40, 110, 220, 0.95);
     outline-offset: -2px;
     border-radius: 4px;
 }
 
-/* Easy-select mode: clicking anywhere on the thumb selects it. We turn the
-   thumb into a giant tap target and add an explicit hover/active style so
-   the user feels the interaction. */
+/* Easy-select mode: clicking anywhere on the thumb enqueues a download.
+   Adds an explicit hover/active style so the user feels the interaction. */
 body.r34dw-easyselect span.thumb {
     cursor: pointer;
     transition: outline-color .15s ease;
@@ -100,108 +66,65 @@ body.r34dw-easyselect span.thumb:hover {
     outline: 2px solid rgba(40, 110, 220, 0.7);
     outline-offset: -2px;
 }
-body.r34dw-easyselect span.thumb.r34dw-thumb-selected {
-    outline: 3px solid rgba(40, 160, 80, 1);
-    outline-offset: -2px;
-}
 /* Block the underlying <a>'s navigation cursor in easy-select mode so the
    user doesn't think they'll navigate away on click. */
 body.r34dw-easyselect span.thumb a { cursor: pointer; }
 
-/* Sticky toolbar */
+/* Compact sticky toolbar — just the Easy-select toggle + a tiny queue
+   counter. Sits in the top-right corner. The whole thing is laid out as a
+   single horizontal pill so it takes the minimum possible space, especially
+   on phones where vertical room is precious. */
 .r34dw-toolbar {
     position: fixed;
-    top: 12px;
-    right: 12px;
+    top: 8px;
+    right: 8px;
     z-index: 2147483645;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px;
-    background: rgba(15, 15, 15, 0.85);
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    border-radius: 10px;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
-    font: 600 12px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-    color: #fff;
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
-    max-width: 260px;
-}
-.r34dw-toolbar-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 2px;
-}
-.r34dw-toolbar-title {
-    font-weight: 700;
-    font-size: 11px;
-    letter-spacing: .04em;
-    text-transform: uppercase;
-    opacity: .85;
-}
-.r34dw-mode-row { display: flex; gap: 4px; }
-.r34dw-mode-btn {
-    flex: 1 1 auto;
-    padding: 6px 10px;
-    border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    background: rgba(255, 255, 255, 0.05);
-    color: #fff;
-    cursor: pointer;
-    font: inherit;
-    transition: background .15s ease;
-}
-.r34dw-mode-btn:hover { background: rgba(255, 255, 255, 0.12); }
-.r34dw-mode-btn.r34dw-active {
-    background: rgba(40, 110, 220, 0.95);
-    border-color: rgba(255, 255, 255, 0.6);
-}
-.r34dw-multi-actions {
-    display: none;
-    flex-direction: column;
-    gap: 4px;
-    margin-top: 4px;
-    padding-top: 6px;
-    border-top: 1px solid rgba(255, 255, 255, 0.18);
-}
-body.r34dw-mode-multi .r34dw-multi-actions { display: flex; }
-
-/* Easy-select toggle — sits in the header row, right of the "Rule34 DW" title.
-   Always visible: empty white-bordered square when off, green-filled with a
-   checkmark when on. Acts like a real checkbox so the user immediately sees it. */
-.r34dw-easy-toggle {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 6px 4px 4px;
-    border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    background: rgba(255, 255, 255, 0.05);
+    padding: 3px;
+    background: rgba(15, 15, 15, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 999px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    font: 600 11px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    color: #fff;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    max-width: 80vw;
+}
+
+/* Easy-select toggle — empty white-bordered square + the word "Easy".
+   Green-filled with a checkmark when on. */
+.r34dw-easy-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px 2px 3px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
     color: #fff;
     cursor: pointer;
     font: inherit;
-    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: .04em;
     transition: background .15s ease, transform .1s ease, border-color .15s ease;
 }
-.r34dw-easy-toggle:hover { background: rgba(255, 255, 255, 0.12); }
+.r34dw-easy-toggle:hover  { background: rgba(255, 255, 255, 0.10); }
 .r34dw-easy-toggle:active { transform: scale(0.96); }
 .r34dw-easy-toggle.r34dw-active {
-    background: rgba(40, 160, 80, 0.2);
-    border-color: rgba(40, 200, 100, 0.95);
+    background: rgba(40, 160, 80, 0.22);
+    border-color: rgba(40, 200, 100, 0.9);
 }
 .r34dw-easy-label {
     font-weight: 700;
-    opacity: .85;
+    opacity: .9;
     pointer-events: none;
 }
 .r34dw-easy-box {
-    width: 20px;
-    height: 20px;
+    width: 16px;
+    height: 16px;
     border-radius: 4px;
     border: 2px solid rgba(255, 255, 255, 0.85);
     background: rgba(20, 20, 20, 0.55);
@@ -213,8 +136,8 @@ body.r34dw-mode-multi .r34dw-multi-actions { display: flex; }
     flex: 0 0 auto;
 }
 .r34dw-easy-box svg {
-    width: 14px;
-    height: 14px;
+    width: 11px;
+    height: 11px;
     display: none;
     pointer-events: none;
 }
@@ -224,30 +147,37 @@ body.r34dw-mode-multi .r34dw-multi-actions { display: flex; }
 }
 .r34dw-easy-toggle.r34dw-active .r34dw-easy-box svg { display: block; }
 
-.r34dw-action-btn {
-    padding: 7px 10px;
-    border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    background: rgba(40, 160, 80, 0.95);
-    color: #fff;
-    cursor: pointer;
-    font: inherit;
+/* Queue counter — shows up only while there are pending downloads. */
+.r34dw-queue-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .02em;
+    white-space: nowrap;
 }
-.r34dw-action-btn[disabled] { opacity: .55; cursor: default; }
-.r34dw-action-btn.r34dw-clear { background: rgba(160, 60, 60, 0.85); }
-.r34dw-progress { font-size: 11px; opacity: .85; }
-
-/* Hide the per-thumb DW button while in multi mode, and vice-versa */
-body.r34dw-mode-multi .r34dw-thumb-btn { display: none !important; }
-body:not(.r34dw-mode-multi) .r34dw-thumb-check { display: none !important; }
+.r34dw-queue-status[hidden] { display: none; }
+.r34dw-queue-status.r34dw-queue-active {
+    background: rgba(40, 110, 220, 0.85);
+    color: #fff;
+}
+.r34dw-queue-status.r34dw-queue-error {
+    background: rgba(176, 0, 32, 0.9);
+    color: #fff;
+}
 
 @media (max-width: 720px) {
+    /* Thumb DW button: keep it tappable but small. */
     .r34dw-thumb-btn { padding: 5px 8px; font-size: 12px; }
-    .r34dw-thumb-check { width: 26px; height: 26px; }
-    .r34dw-thumb-check svg { width: 18px; height: 18px; }
-    .r34dw-post-btn { right: 14px; bottom: 14px; padding: 14px 18px; font-size: 17px; }
-    .r34dw-toolbar { top: 8px; right: 8px; padding: 7px; font-size: 13px; max-width: 80vw; }
-    .r34dw-easy-toggle { font-size: 12px; padding: 5px 7px 5px 5px; }
-    .r34dw-easy-box { width: 22px; height: 22px; }
-    .r34dw-easy-box svg { width: 16px; height: 16px; }
+    .r34dw-post-btn  { right: 14px; bottom: 14px; padding: 14px 18px; font-size: 17px; }
+
+    /* Toolbar: even tighter on phones. We shrink the label spacing & padding
+       but keep the checkbox itself a comfortable tap target. */
+    .r34dw-toolbar { top: 6px; right: 6px; padding: 2px; font-size: 11px; }
+    .r34dw-easy-toggle { padding: 3px 7px 3px 3px; gap: 4px; }
+    .r34dw-easy-box { width: 18px; height: 18px; }
+    .r34dw-easy-box svg { width: 12px; height: 12px; }
+    .r34dw-queue-status { padding: 3px 7px; font-size: 10px; }
 }

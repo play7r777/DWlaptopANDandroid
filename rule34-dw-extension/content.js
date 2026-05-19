@@ -3,17 +3,17 @@
 // Runs on every page of rule34.xxx. Adds:
 //   - a "DW" download button to every <span class="thumb"> in the listing
 //   - a fixed bottom-right "DW" button on each individual post page
-//   - a sticky Solo / Multi toggle in the listing (hidden on post pages),
-//     where Multi swaps the DW buttons for empty checkboxes for bulk selection
-//   - an "Easy-select" checkbox in the toolbar — when on, clicking anywhere on
-//     a thumbnail selects/deselects it (no need to aim at the small box).
+//   - a compact toolbar in the top-right corner with one toggle: "Easy-select"
+//     — when on, clicking anywhere on a thumbnail enqueues it for download
+//     (no need to aim at the small DW button).
 //
-// Selection persists across pages, tabs, browser restarts, and successful
-// downloads — it is ONLY cleared by the red "Снять выделение" button.
-//
-// Downloads go through the background service worker, which calls
-// chrome.downloads.download({saveAs:false}) so the browser saves silently
-// to the Downloads/rule34/ folder — no per-file dialog, even for bulk runs.
+// Click-to-download model: every click on a thumb (or its DW button) adds the
+// post to a persistent FIFO queue in chrome.storage.local. A worker pops one
+// item at a time, resolves the original-file URL, hands it to the background
+// service worker for a silent download (saveAs:false → straight into
+// Downloads/rule34/), then moves to the next item. The queue survives page
+// navigation, tab switches, and browser restarts; a TTL lock makes sure two
+// tabs never process the same item twice.
 
 (function () {
     'use strict';
@@ -23,10 +23,17 @@
     // ------------------------------------------------------------------
 
     const BTN_LABEL = 'DW';
-    const STORAGE_KEY_MODE     = 'r34dw_mode';       // 'solo' | 'multi'
-    const STORAGE_KEY_SELECTED = 'r34dw_selected';   // string[] of post IDs
-    const STORAGE_KEY_EASY     = 'r34dw_easyselect'; // boolean — easy-select mode
-    const STORAGE_KEY_CACHE    = 'r34dw_urlcache';   // {id: {url, ts}} — resolved file URLs
+    const STORAGE_KEY_EASY  = 'r34dw_easyselect'; // boolean — click anywhere on thumb to enqueue
+    const STORAGE_KEY_CACHE = 'r34dw_urlcache';   // {id: {url, ts}} — resolved file URLs
+    const STORAGE_KEY_QUEUE = 'r34dw_queue';      // string[] of post IDs — FIFO download queue
+    const STORAGE_KEY_LOCK  = 'r34dw_qlock';      // {tab, ts} — cross-tab worker lock, TTL refreshed every LOCK_REFRESH_MS
+
+    // A short tab key so the lock distinguishes between tabs of the same
+    // session. Regenerated per page-load — that's fine, we only care about
+    // ownership while this content script is alive.
+    const TAB_KEY = (Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+    const LOCK_TTL_MS     = 6000;
+    const LOCK_REFRESH_MS = 2000;
 
     // Maximum number of resolved URLs to keep cached. Older entries get evicted.
     const URL_CACHE_LIMIT = 2000;
@@ -107,22 +114,6 @@
                         return;
                     }
                     resolve(resp || { ok: false, error: 'no response' });
-                });
-            } catch (e) {
-                resolve({ ok: false, error: String(e && e.message || e) });
-            }
-        });
-    }
-
-    function sendDownloadMany(items) {
-        return new Promise((resolve) => {
-            try {
-                ext.runtime.sendMessage({ type: 'downloadMany', items }, (resp) => {
-                    if (ext.runtime.lastError) {
-                        resolve({ ok: false, error: String(ext.runtime.lastError.message || ext.runtime.lastError) });
-                        return;
-                    }
-                    resolve(resp || { ok: false });
                 });
             } catch (e) {
                 resolve({ ok: false, error: String(e && e.message || e) });
@@ -510,26 +501,19 @@
     }
 
     // ------------------------------------------------------------------
-    // Mode state (Solo / Multi + Easy-select) — persisted via chrome.storage.local
+    // Easy-select state — persisted via chrome.storage.local
+    //   easy = true  → clicking anywhere on a thumbnail enqueues it for
+    //                  download (no need to aim at the small DW button)
+    //   easy = false → only the DW button enqueues; the rest of the thumb
+    //                  behaves like a normal link to the post page
     // ------------------------------------------------------------------
 
-    const ModeState = {
-        current: 'solo',
+    const EasyState = {
         easy: false,
-        selected: new Set(),
         listeners: [],
-        // _internal flag so storage.onChanged doesn't loop back into a save
-        _suppressPersist: false,
 
         async init() {
-            const [storedMode, storedSel, storedEasy] = await Promise.all([
-                storageGet(STORAGE_KEY_MODE, 'solo'),
-                storageGet(STORAGE_KEY_SELECTED, []),
-                storageGet(STORAGE_KEY_EASY, false),
-            ]);
-            this.current = storedMode === 'multi' ? 'multi' : 'solo';
-            this.selected = new Set(Array.isArray(storedSel) ? storedSel.map(String) : []);
-            this.easy = !!storedEasy;
+            this.easy = !!(await storageGet(STORAGE_KEY_EASY, false));
             this.applyBodyClass();
             this.notify();
             this._installStorageSync();
@@ -540,15 +524,6 @@
                 if (!ext || !ext.storage || !ext.storage.onChanged) return;
                 ext.storage.onChanged.addListener((changes, area) => {
                     if (area !== 'local') return;
-                    if (changes[STORAGE_KEY_MODE]) {
-                        const v = changes[STORAGE_KEY_MODE].newValue;
-                        const next = v === 'multi' ? 'multi' : 'solo';
-                        if (next !== this.current) {
-                            this.current = next;
-                            this.applyBodyClass();
-                            this.notify();
-                        }
-                    }
                     if (changes[STORAGE_KEY_EASY]) {
                         const v = !!changes[STORAGE_KEY_EASY].newValue;
                         if (v !== this.easy) {
@@ -557,37 +532,11 @@
                             this.notify();
                         }
                     }
-                    if (changes[STORAGE_KEY_SELECTED]) {
-                        const v = changes[STORAGE_KEY_SELECTED].newValue;
-                        const arr = Array.isArray(v) ? v.map(String) : [];
-                        // Replace only if actually different to avoid pointless re-renders.
-                        const sameSize = arr.length === this.selected.size;
-                        const sameItems = sameSize && arr.every(id => this.selected.has(id));
-                        if (!sameItems) {
-                            this.selected = new Set(arr);
-                            this._suppressPersist = true;
-                            this.notify();
-                            this._suppressPersist = false;
-                        }
-                    }
                 });
             } catch (_) { /* ignore */ }
         },
 
-        _persistSelected() {
-            if (this._suppressPersist) return;
-            try { storageSet(STORAGE_KEY_SELECTED, Array.from(this.selected)); } catch (_) {}
-        },
-
-        set(mode) {
-            mode = mode === 'multi' ? 'multi' : 'solo';
-            if (this.current === mode) return;
-            this.current = mode;
-            storageSet(STORAGE_KEY_MODE, mode);
-            this.applyBodyClass();
-            this.notify();
-        },
-        setEasy(on) {
+        set(on) {
             on = !!on;
             if (this.easy === on) return;
             this.easy = on;
@@ -598,29 +547,264 @@
         applyBodyClass() {
             const b = document.body;
             if (!b) return;
-            b.classList.toggle('r34dw-mode-multi', this.current === 'multi');
-            b.classList.toggle('r34dw-mode-solo',  this.current === 'solo');
-            b.classList.toggle('r34dw-easyselect', this.easy && this.current === 'multi');
-        },
-        toggleSelected(id) {
-            id = String(id);
-            if (this.selected.has(id)) this.selected.delete(id);
-            else this.selected.add(id);
-            this._persistSelected();
-            this.notify();
-        },
-        clearSelected() {
-            if (this.selected.size === 0) return;
-            this.selected.clear();
-            this._persistSelected();
-            this.notify();
+            b.classList.toggle('r34dw-easyselect', this.easy);
         },
         on(fn) { this.listeners.push(fn); },
         notify() { for (const fn of this.listeners) try { fn(); } catch (_) {} }
     };
 
     // ------------------------------------------------------------------
-    // Toolbar (mode switcher + multi actions). Hidden on post pages.
+    // Persistent download queue — FIFO list of post IDs.
+    //
+    // Anatomy:
+    //   - storage.local[QUEUE]   = ordered array of post IDs waiting to be
+    //                              processed (the head is processed next)
+    //   - storage.local[LOCK]    = {tab, ts} — only the lock-holder may pop
+    //                              and process items. The active worker
+    //                              refreshes ts every LOCK_REFRESH_MS so other
+    //                              tabs see it as alive. If a tab is closed
+    //                              mid-download, the lock simply goes stale
+    //                              (no heartbeat) and another tab can grab it.
+    //   - active (in-memory)     = id currently being processed in this tab,
+    //                              shown in the toolbar as the active download
+    //
+    // The queue is NEVER cleared automatically; only successful downloads
+    // remove their own ID. Failed items are dropped from the queue too
+    // (the user is notified) — they're not auto-retried, the user can click
+    // again if they want.
+    // ------------------------------------------------------------------
+
+    const DownloadQueue = {
+        pending: [],          // ordered list of post IDs (strings)
+        active: null,         // id currently being processed by THIS tab
+        activeFilename: null, // filename of the active download, once resolved
+        lastError: null,      // {id, message, ts} — most recent failure, for UI
+        listeners: [],
+        _suppressPersist: false,
+
+        async init() {
+            const stored = await storageGet(STORAGE_KEY_QUEUE, []);
+            this.pending = (Array.isArray(stored) ? stored : []).map(String);
+            this._installStorageSync();
+            this.notify();
+        },
+
+        _installStorageSync() {
+            try {
+                if (!ext || !ext.storage || !ext.storage.onChanged) return;
+                ext.storage.onChanged.addListener((changes, area) => {
+                    if (area !== 'local') return;
+                    if (changes[STORAGE_KEY_QUEUE]) {
+                        const v = changes[STORAGE_KEY_QUEUE].newValue;
+                        const arr = Array.isArray(v) ? v.map(String) : [];
+                        const same = arr.length === this.pending.length
+                                  && arr.every((id, i) => id === this.pending[i]);
+                        if (!same) {
+                            this._suppressPersist = true;
+                            this.pending = arr;
+                            this._suppressPersist = false;
+                            this.notify();
+                        }
+                    }
+                });
+            } catch (_) { /* ignore */ }
+        },
+
+        _persist() {
+            if (this._suppressPersist) return;
+            try { storageSet(STORAGE_KEY_QUEUE, this.pending); } catch (_) {}
+        },
+
+        // Enqueue an id. Returns true if the queue actually changed, false if
+        // the id was already pending/active (we silently dedupe so spamming
+        // the same thumb doesn't create duplicate downloads).
+        enqueue(id) {
+            id = String(id);
+            if (this.active === id) return false;
+            if (this.pending.includes(id)) return false;
+            this.pending.push(id);
+            this._persist();
+            this.notify();
+            return true;
+        },
+
+        // Peek the head of the queue without removing it. Caller is expected
+        // to hold the lock before processing it. We deliberately do NOT shift
+        // here so that if the page navigates mid-processing, the item stays
+        // at the head of pending and the next page-load resumes it.
+        peekHead() {
+            return this.pending.length === 0 ? null : this.pending[0];
+        },
+
+        // Remove a specific id from pending (typically called after the
+        // download has been submitted to the service worker, success or fail).
+        // Idempotent.
+        removeId(id) {
+            id = String(id);
+            const i = this.pending.indexOf(id);
+            if (i === -1) return false;
+            this.pending.splice(i, 1);
+            this._persist();
+            this.notify();
+            return true;
+        },
+
+        markActive(id, filename) {
+            this.active = id ? String(id) : null;
+            this.activeFilename = filename || null;
+            this.notify();
+        },
+
+        markError(id, message) {
+            this.lastError = { id: String(id), message: String(message || 'error'), ts: Date.now() };
+            this.notify();
+            // Clear the surfaced error after a few seconds so it doesn't get
+            // stuck in the toolbar forever.
+            setTimeout(() => {
+                if (this.lastError && this.lastError.ts && Date.now() - this.lastError.ts >= 4500) {
+                    this.lastError = null;
+                    this.notify();
+                }
+            }, 5000);
+        },
+
+        // Total work the user can still see in flight: head + tail.
+        outstanding() {
+            return this.pending.length + (this.active ? 1 : 0);
+        },
+
+        on(fn) { this.listeners.push(fn); },
+        notify() { for (const fn of this.listeners) try { fn(); } catch (_) {} }
+    };
+
+    // Lock primitives. We use chrome.storage.local with a heartbeat-style
+    // timestamp. Storage writes inside the extension are serialized per key,
+    // which is good enough for our 1-2 tab use case — a true CAS isn't needed.
+
+    function lockGet() {
+        return new Promise((resolve) => {
+            try {
+                ext.storage.local.get([STORAGE_KEY_LOCK], (out) => {
+                    if (ext.runtime.lastError) { resolve(null); return; }
+                    resolve((out && out[STORAGE_KEY_LOCK]) || null);
+                });
+            } catch (_) { resolve(null); }
+        });
+    }
+    function lockWrite(lock) {
+        return new Promise((resolve) => {
+            try { ext.storage.local.set({ [STORAGE_KEY_LOCK]: lock }, () => resolve()); }
+            catch (_) { resolve(); }
+        });
+    }
+    function lockClear() {
+        return new Promise((resolve) => {
+            try { ext.storage.local.remove(STORAGE_KEY_LOCK, () => resolve()); }
+            catch (_) { resolve(); }
+        });
+    }
+
+    async function tryAcquireLock() {
+        const now  = Date.now();
+        const cur  = await lockGet();
+        if (cur && cur.tab && cur.tab !== TAB_KEY && cur.ts && now - cur.ts < LOCK_TTL_MS) {
+            return false; // someone else is actively working
+        }
+        await lockWrite({ tab: TAB_KEY, ts: now });
+        // Double-check we still own it (a racing tab may have written between
+        // our get & set). If not, back off — the loser of the race will retry.
+        const after = await lockGet();
+        return !!(after && after.tab === TAB_KEY);
+    }
+
+    async function refreshLock() {
+        const cur = await lockGet();
+        if (!cur || cur.tab !== TAB_KEY) return false;
+        await lockWrite({ tab: TAB_KEY, ts: Date.now() });
+        return true;
+    }
+
+    async function releaseLockIfHeld() {
+        const cur = await lockGet();
+        if (cur && cur.tab === TAB_KEY) await lockClear();
+    }
+
+    // Worker loop. Idempotent — calling it while it's already running is a
+    // no-op. Persists across page navigations because the next page-load just
+    // calls runQueueWorker() again and continues from the persisted queue.
+    let _workerRunning = false;
+    let _lockHeartbeat = null;
+
+    async function runQueueWorker() {
+        if (_workerRunning) return;
+        if (DownloadQueue.pending.length === 0 && !DownloadQueue.active) return;
+        _workerRunning = true;
+
+        try {
+            while (DownloadQueue.pending.length > 0) {
+                const haveLock = await tryAcquireLock();
+                if (!haveLock) {
+                    // Another tab is actively processing. Sleep & re-check; if
+                    // it dies the lock will go stale and we'll take over.
+                    await delay(LOCK_REFRESH_MS);
+                    continue;
+                }
+
+                if (!_lockHeartbeat) {
+                    _lockHeartbeat = setInterval(() => { refreshLock(); }, LOCK_REFRESH_MS);
+                }
+
+                // Peek the head (don't shift yet). If the page dies while
+                // we're working on this item, it stays at the head and the
+                // next page-load resumes it.
+                const id = DownloadQueue.peekHead();
+                if (!id) break;
+                DownloadQueue.markActive(id, null);
+
+                try {
+                    const url = await fetchPostFileUrl(id);
+                    if (!isValidMediaUrl(url)) throw new Error('refusing non-media URL: ' + url);
+                    const name = fileNameFromUrl(url);
+                    DownloadQueue.markActive(id, name);
+                    const r = await sendDownload(url, name);
+                    if (!r || !r.ok) throw new Error((r && r.error) || 'download failed');
+                    // Success: the only feedback is the toolbar counter going
+                    // down. We deliberately don't toast every single file — a
+                    // queue of 20 would spam the user.
+                } catch (e) {
+                    console.error('[Rule34 DW] queue item failed', id, e);
+                    DownloadQueue.markError(id, e && e.message || e);
+                    notify('Не удалось скачать пост ' + id, true, 2800);
+                    // Treat failures as terminal too — not auto-retrying.
+                    // The user can click the thumb again to re-enqueue.
+                } finally {
+                    // Only remove the item AFTER we've finished processing it
+                    // (or given up). If the page died mid-processing, the
+                    // `finally` doesn't run, the id stays at the head of
+                    // pending, and the next page-load resumes it.
+                    DownloadQueue.removeId(id);
+                    DownloadQueue.markActive(null, null);
+                }
+
+                // Small inter-item delay so rule34 doesn't see an obvious
+                // burst pattern. The URL cache already makes repeats instant.
+                await delay(150);
+            }
+        } finally {
+            _workerRunning = false;
+            if (_lockHeartbeat) { clearInterval(_lockHeartbeat); _lockHeartbeat = null; }
+            await releaseLockIfHeld();
+        }
+    }
+
+    // Release the lock when the page goes away so the next tab/page doesn't
+    // have to wait LOCK_TTL_MS for the heartbeat to expire.
+    window.addEventListener('pagehide', () => { releaseLockIfHeld(); }, { capture: true });
+
+    // ------------------------------------------------------------------
+    // Compact toolbar — just the Easy-select toggle + a tiny queue counter.
+    // Visible only on listing pages (hidden on individual post pages, where
+    // the per-post floating DW button does the same job).
     // ------------------------------------------------------------------
 
     function buildToolbar() {
@@ -632,150 +816,55 @@
         root.id = 'r34dw-toolbar';
         root.className = 'r34dw-toolbar';
         root.innerHTML = `
-            <div class="r34dw-toolbar-header">
-                <div class="r34dw-toolbar-title">Rule34 DW</div>
-                <button type="button" class="r34dw-easy-toggle" role="switch" aria-checked="false"
-                        title="Easy-select: тапнуть по работе = выделить (вкл/выкл)"
-                        aria-label="Easy-select">
-                    <span class="r34dw-easy-box">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5"
-                             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <polyline points="4 12 10 18 20 6"/>
-                        </svg>
-                    </span>
-                    <span class="r34dw-easy-label">Easy</span>
-                </button>
-            </div>
-            <div class="r34dw-mode-row">
-                <button type="button" class="r34dw-mode-btn" data-mode="solo">Solo</button>
-                <button type="button" class="r34dw-mode-btn" data-mode="multi">Multi</button>
-            </div>
-            <div class="r34dw-multi-actions">
-                <button type="button" class="r34dw-action-btn r34dw-download-selected" disabled>
-                    Скачать выбранные (0)
-                </button>
-                <button type="button" class="r34dw-action-btn r34dw-clear" disabled>
-                    Снять выделение
-                </button>
-                <div class="r34dw-progress" style="display:none"></div>
-            </div>
+            <button type="button" class="r34dw-easy-toggle" role="switch" aria-checked="false"
+                    title="Easy-select: тапнуть по работе = скачать (вкл/выкл)"
+                    aria-label="Easy-select">
+                <span class="r34dw-easy-box">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5"
+                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <polyline points="4 12 10 18 20 6"/>
+                    </svg>
+                </span>
+                <span class="r34dw-easy-label">Easy</span>
+            </button>
+            <div class="r34dw-queue-status" aria-live="polite" hidden></div>
         `;
         document.body.appendChild(root);
 
-        root.querySelectorAll('.r34dw-mode-btn').forEach(btn => {
-            btn.addEventListener('click', () => ModeState.set(btn.dataset.mode));
-        });
-
-        const dlBtn      = root.querySelector('.r34dw-download-selected');
-        const clearBtn   = root.querySelector('.r34dw-clear');
-        const progress   = root.querySelector('.r34dw-progress');
         const easyToggle = root.querySelector('.r34dw-easy-toggle');
+        const status     = root.querySelector('.r34dw-queue-status');
 
-        dlBtn.addEventListener('click', () => downloadSelected(dlBtn, progress));
-        clearBtn.addEventListener('click', () => ModeState.clearSelected());
-        easyToggle.addEventListener('click', () => ModeState.setEasy(!ModeState.easy));
+        easyToggle.addEventListener('click', () => EasyState.set(!EasyState.easy));
 
-        ModeState.on(() => {
-            root.querySelectorAll('.r34dw-mode-btn').forEach(b => {
-                b.classList.toggle('r34dw-active', b.dataset.mode === ModeState.current);
-            });
-            const n = ModeState.selected.size;
-            dlBtn.textContent = `Скачать выбранные (${n})`;
-            dlBtn.disabled    = n === 0;
-            clearBtn.disabled = n === 0;
-            easyToggle.classList.toggle('r34dw-active', !!ModeState.easy);
-            easyToggle.setAttribute('aria-checked', ModeState.easy ? 'true' : 'false');
-        });
-
-        ModeState.applyBodyClass();
-        ModeState.notify();
-    }
-
-    // Process up to `limit` items in parallel, returning ordered results.
-    // Each result is {ok:true, value} or {ok:false, error}.
-    async function processWithConcurrency(items, limit, fn) {
-        const results = new Array(items.length);
-        let nextIdx = 0;
-        const workers = [];
-        const n = Math.max(1, Math.min(limit, items.length));
-        for (let w = 0; w < n; w++) {
-            workers.push((async () => {
-                while (true) {
-                    const idx = nextIdx++;
-                    if (idx >= items.length) return;
-                    try {
-                        results[idx] = { ok: true, value: await fn(items[idx], idx) };
-                    } catch (e) {
-                        results[idx] = { ok: false, error: e };
-                    }
-                }
-            })());
-        }
-        await Promise.all(workers);
-        return results;
-    }
-
-    async function downloadSelected(dlBtn, progressEl) {
-        const ids = Array.from(ModeState.selected);
-        if (ids.length === 0) return;
-
-        dlBtn.disabled = true;
-        progressEl.style.display = 'block';
-        progressEl.textContent = `Получаю ссылки 0/${ids.length}…`;
-
-        // Resolve URLs with a single worker — rule34 starts 429ing aggressively
-        // above ~2 concurrent post-page fetches. The persistent URL cache makes
-        // repeat batches near-instant, so this only feels slow on first runs.
-        const okIds      = [];
-        const items      = [];
-        const failedIds  = [];
-        let resolved     = 0;
-
-        await processWithConcurrency(ids, 1, async (id) => {
-            try {
-                const url = await fetchPostFileUrl(id);
-                if (!isValidMediaUrl(url)) {
-                    throw new Error('refusing to download non-media URL: ' + url);
-                }
-                items.push({ url, filename: fileNameFromUrl(url), id: String(id) });
-                okIds.push(String(id));
-            } catch (e) {
-                console.error('[Rule34 DW] resolve failed for', id, e);
-                failedIds.push(String(id));
-            } finally {
-                resolved++;
-                progressEl.textContent = `Получаю ссылки ${resolved}/${ids.length}…`;
+        const renderEasy = () => {
+            easyToggle.classList.toggle('r34dw-active', !!EasyState.easy);
+            easyToggle.setAttribute('aria-checked', EasyState.easy ? 'true' : 'false');
+        };
+        const renderQueue = () => {
+            const outstanding = DownloadQueue.outstanding();
+            if (DownloadQueue.lastError) {
+                status.hidden = false;
+                status.className = 'r34dw-queue-status r34dw-queue-error';
+                status.textContent = `Ошибка ${DownloadQueue.lastError.id}`;
+                return;
             }
-        });
+            if (outstanding === 0) {
+                status.hidden = true;
+                status.className = 'r34dw-queue-status';
+                status.textContent = '';
+                return;
+            }
+            status.hidden = false;
+            status.className = 'r34dw-queue-status r34dw-queue-active';
+            // Show "Качаю Nк/M" where Nк is remaining-after-current. We display
+            // just the outstanding count to keep it short on phones.
+            status.textContent = `Качаю · ${outstanding}`;
+        };
 
-        if (items.length === 0) {
-            progressEl.textContent = `Не удалось получить ни одной ссылки (${ids.length} попыток)`;
-            console.error('[Rule34 DW] all URL resolutions failed for ids:', ids);
-            setTimeout(() => { progressEl.style.display = 'none'; }, 5000);
-            dlBtn.disabled = false;
-            // Keep selection intact so the user can retry.
-            return;
-        }
-
-        progressEl.textContent = `Скачиваю ${items.length} файл(ов)…`;
-        notify(`Скачиваю ${items.length} файл(ов)`, false, 1800);
-
-        const result = await sendDownloadMany(items);
-
-        const failedResolve  = ids.length - items.length;
-        const failedDownload = result && typeof result.failures  === 'number' ? result.failures  : 0;
-        const successes      = result && typeof result.successes === 'number' ? result.successes : 0;
-        const totalFailed    = failedResolve + failedDownload;
-
-        progressEl.textContent = totalFailed
-            ? `Готово: ${successes} ок, ${totalFailed} ошибок (см. консоль)`
-            : `Готово: скачано ${successes}`;
-        setTimeout(() => { progressEl.style.display = 'none'; progressEl.textContent = ''; }, 4500);
-
-        // IMPORTANT: do NOT auto-clear the selection. The selection is only
-        // cleared by the explicit red "Снять выделение" button — successful
-        // downloads keep the selection so the user can re-download or pivot.
-        dlBtn.disabled = false;
+        EasyState.on(renderEasy);
+        DownloadQueue.on(renderQueue);
+        renderEasy();
+        renderQueue();
     }
 
     // ------------------------------------------------------------------
@@ -793,6 +882,25 @@
         return null;
     }
 
+    // Enqueue + start worker. Wrapped in a function so the per-thumb button
+    // and the easy-mode click handler share the exact same behaviour, including
+    // the brief feedback toast (only on the first item — after that the
+    // toolbar counter is enough).
+    function enqueueForDownload(id) {
+        const added = DownloadQueue.enqueue(id);
+        if (added) {
+            // First click while idle → short toast. Subsequent clicks while a
+            // download is already running keep silent (toolbar counter is
+            // enough, otherwise we'd spam the user when they queue 10 items).
+            if (DownloadQueue.outstanding() === 1) {
+                notify('Качаю пост ' + id, false, 1500);
+            }
+        }
+        // Always kick the worker — it's a no-op if already running, and it
+        // also handles the "workers from previous page died mid-queue" case.
+        runQueueWorker();
+    }
+
     function addThumbControls(span) {
         if (!span || span.dataset.r34dw === '1') return;
         const id = postIdFromThumb(span);
@@ -802,98 +910,59 @@
         const cs = getComputedStyle(span);
         if (cs.position === 'static') span.style.position = 'relative';
 
-        // Solo: DW button
+        // Small DW button in the top-right of the thumb. Clicking it enqueues
+        // the post for download (one click → one download). The button stays
+        // visible — no "loading" state — because downloads now happen via the
+        // persistent queue and the toolbar counter is the canonical progress
+        // indicator.
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'r34dw-btn r34dw-thumb-btn';
         btn.textContent = BTN_LABEL;
-        btn.title = 'Скачать оригинал';
+        btn.title = 'Скачать оригинал (поставить в очередь)';
         btn.setAttribute('aria-label', 'Скачать пост ' + id);
 
-        btn.addEventListener('click', async (ev) => {
+        btn.addEventListener('click', (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
-            if (btn.classList.contains('r34dw-loading')) return;
-            btn.classList.add('r34dw-loading');
-            btn.textContent = '…';
-            try {
-                const url = await fetchPostFileUrl(id);
-                if (!isValidMediaUrl(url)) throw new Error('refusing non-media URL');
-                const name = fileNameFromUrl(url);
-                notify('Скачиваю: ' + name);
-                const r = await sendDownload(url, name);
-                if (!r || !r.ok) notify('Не удалось скачать файл', true, 3500);
-            } catch (e) {
-                console.error('[Rule34 DW]', e);
-                notify('Не удалось получить ссылку на файл', true);
-            } finally {
-                btn.classList.remove('r34dw-loading');
-                btn.textContent = BTN_LABEL;
-            }
+            enqueueForDownload(id);
         });
         btn.addEventListener('mousedown',  (e) => e.stopPropagation());
         btn.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
 
         span.appendChild(btn);
 
-        // Multi: checkbox
-        const check = document.createElement('div');
-        check.className = 'r34dw-thumb-check';
-        check.setAttribute('role', 'checkbox');
-        check.setAttribute('aria-checked', 'false');
-        check.setAttribute('aria-label', 'Выделить пост ' + id);
-        check.title = 'Выделить (multi-select)';
-        check.dataset.id = id;
-        check.innerHTML =
-            '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5" ' +
-            'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-            '<polyline points="4 12 10 18 20 6" />' +
-            '</svg>';
-
-        check.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            ModeState.toggleSelected(id);
-        });
-        check.addEventListener('mousedown',  (e) => e.stopPropagation());
-        check.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
-
-        span.appendChild(check);
-
-        // Easy-select: clicking anywhere on the thumb toggles selection while
-        // body.r34dw-easyselect is on. We attach the listener once on the span;
-        // the body class gates whether it actually fires (we always run, but
-        // bail out when not in easy mode).
-        const easySelectHandler = (ev) => {
-            if (!(ModeState.current === 'multi' && ModeState.easy)) return;
-            // Don't hijack clicks on our own controls (DW button / checkbox).
+        // Easy-select: clicking anywhere on the thumb enqueues the post for
+        // download. The body.r34dw-easyselect class gates whether we hijack the
+        // click — when easy is off, the thumb keeps its native "click to open
+        // post page" behaviour and only the DW button enqueues.
+        const easyClickHandler = (ev) => {
+            if (!EasyState.easy) return;
             const t = ev.target;
-            if (t && t.closest && (t.closest('.r34dw-thumb-btn') || t.closest('.r34dw-thumb-check'))) {
-                return;
-            }
+            if (t && t.closest && t.closest('.r34dw-thumb-btn')) return;
             ev.preventDefault();
             ev.stopPropagation();
-            ModeState.toggleSelected(id);
+            enqueueForDownload(id);
         };
-        span.addEventListener('click', easySelectHandler, true);
+        span.addEventListener('click', easyClickHandler, true);
         // Suppress the underlying <a>'s native navigation on mousedown in easy
-        // mode — some browsers fire navigation before our click handler.
+        // mode — some browsers fire navigation before our click handler runs.
         span.addEventListener('mousedown', (ev) => {
-            if (!(ModeState.current === 'multi' && ModeState.easy)) return;
+            if (!EasyState.easy) return;
             const t = ev.target;
-            if (t && t.closest && (t.closest('.r34dw-thumb-btn') || t.closest('.r34dw-thumb-check'))) return;
+            if (t && t.closest && t.closest('.r34dw-thumb-btn')) return;
             // Middle-click and modifiers should still work for power users.
             if (ev.button !== 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
             ev.preventDefault();
         }, true);
 
+        // Briefly highlight the thumb when its post becomes the active
+        // download (so the user can see what's currently being fetched).
         const sync = () => {
-            const isSel = ModeState.selected.has(id);
-            check.classList.toggle('r34dw-checked', isSel);
-            check.setAttribute('aria-checked', isSel ? 'true' : 'false');
-            span.classList.toggle('r34dw-thumb-selected', isSel);
+            const isActive = DownloadQueue.active === id;
+            span.classList.toggle('r34dw-thumb-active', isActive);
         };
-        ModeState.on(sync);
+        DownloadQueue.on(sync);
         sync();
     }
 
@@ -960,10 +1029,16 @@
     // ------------------------------------------------------------------
 
     async function boot() {
-        await ModeState.init();
+        await Promise.all([
+            EasyState.init(),
+            DownloadQueue.init(),
+        ]);
         buildToolbar();
         processThumbs(document);
         addPostPageButton();
+        // Resume any leftover work from a prior page navigation. If the
+        // queue is empty this is a no-op.
+        runQueueWorker();
     }
 
     if (document.readyState === 'loading') {
