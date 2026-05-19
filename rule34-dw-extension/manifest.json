@@ -1,0 +1,52 @@
+{
+    "manifest_version": 3,
+    "name": "Rule34 DW Button",
+    "version": "1.5.0",
+    "description": "Adds a DW download button to rule34.xxx thumbnails and post pages. Click a thumb (or anywhere on it with Easy-select on) — it goes into a persistent FIFO queue and downloads in the background. Queue survives page navigation, tab switches, and browser restarts; a TTL lock keeps multi-tab sessions from duplicating downloads. Always grabs the highest-quality original (Original image/video — never .php). Robust 429/403 retries with API fallback. Files land silently in Downloads/rule34/.",
+    "author": "play3r333",
+    "minimum_chrome_version": "88",
+
+    "permissions": [
+        "downloads",
+        "storage"
+    ],
+    "host_permissions": [
+        "https://rule34.xxx/*",
+        "https://*.rule34.xxx/*"
+    ],
+
+    "background": {
+        "service_worker": "background.js",
+        "type": "module"
+    },
+
+    "content_scripts": [
+        {
+            "matches": [
+                "https://rule34.xxx/*",
+                "https://www.rule34.xxx/*"
+            ],
+            "js": ["content.js"],
+            "css": ["content.css"],
+            "run_at": "document_end",
+            "all_frames": false
+        }
+    ],
+
+    "icons": {
+        "16":  "icons/icon-16.png",
+        "32":  "icons/icon-32.png",
+        "48":  "icons/icon-48.png",
+        "128": "icons/icon-128.png"
+    },
+
+    "action": {
+        "default_title": "Rule34 DW Button",
+        "default_icon": {
+            "16":  "icons/icon-16.png",
+            "32":  "icons/icon-32.png",
+            "48":  "icons/icon-48.png",
+            "128": "icons/icon-128.png"
+        }
+    }
+}
