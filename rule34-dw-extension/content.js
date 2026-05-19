@@ -152,10 +152,17 @@
     const SAMPLE_PATH_RE = /\/+samples?\//i;
     const PHP_PATH_RE    = /\.php(?:\?|#|$)/i;
 
-    // Quality ranking — higher score = better. Video formats and PNG rank highest
-    // since they preserve the most data. WebP is the lowest fallback because
-    // rule34 sometimes serves resampled webp previews.
-    const EXT_QUALITY = { webm: 100, mp4: 100, png: 90, jpg: 80, jpeg: 80, gif: 70, webp: 60 };
+    // Quality ranking — used ONLY as a tiebreaker between multiple CDN anchors
+    // when no explicit "Original image/video" text exists. The "Original" anchor
+    // and og:image meta are always trusted first, so this ranking does NOT
+    // override a post whose true original is jpg with a smaller png preview.
+    //
+    // - Video formats (webm/mp4) win when both video and image candidates
+    //   exist, because that means it's a video post.
+    // - png / jpg / jpeg / gif are equal — any of them can be the actual
+    //   original, we trust whichever rule34 surfaces.
+    // - webp ranks last because rule34 often serves webp as a resampled preview.
+    const EXT_QUALITY = { webm: 100, mp4: 100, png: 90, jpg: 90, jpeg: 90, gif: 90, webp: 50 };
     function urlQualityScore(url) {
         const m = String(url || '').match(FILE_EXT_RE);
         if (!m) return 0;
@@ -192,10 +199,11 @@
 
     function findOriginalLinkInDoc(doc) {
         const links = doc.querySelectorAll('a[href]');
-        const sourceCandidates = [];
 
-        // Priority 1: anchor whose visible text is "Original image / video / Original"
-        // (whitespace + case insensitive — rule34 wraps the text on its own line).
+        // Priority 1: anchor whose visible text is "Original image / video / Original".
+        // This is the gold standard — rule34 labels the literal source file with
+        // this text. We TRUST it unconditionally; the file extension is whatever
+        // the artist uploaded (jpg, png, gif, webm — all valid originals).
         for (const a of links) {
             const t = (a.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
             if (t === 'original image' || t === 'original video' || t === 'original') {
@@ -204,22 +212,42 @@
             }
         }
 
-        // Priority 2: og:image meta — rule34 sets this to the source CDN URL.
+        // Priority 2: og:image meta. rule34 sets this to the canonical source
+        // CDN URL. If present and valid, this IS the original — no comparison
+        // needed, because rule34 itself decided what the canonical file is.
         const og = doc.querySelector('meta[property="og:image"][content]');
-        if (og) {
-            const h = og.getAttribute('content');
-            if (isSourceHref(h)) sourceCandidates.push(h);
-        }
+        const ogHref = og && og.getAttribute('content');
+        if (ogHref && isSourceHref(ogHref)) return ogHref;
 
-        // Priority 3: any anchor pointing to the source CDN with a known
-        // extension. Sort by extension quality so e.g. a "png" link wins over
-        // a "webp" link to the same hash.
+        // Priority 3: scan ALL anchors to the source CDN. Two cases:
+        //   a) Multiple anchors point at the SAME hash — that's the canonical
+        //      file, just pick any of those (they're identical files).
+        //   b) Anchors point at DIFFERENT files (rare — a multi-asset post).
+        //      In that case, use EXT_QUALITY only to prefer video over image
+        //      formats; image formats are equal so we trust DOM order (rule34
+        //      lists the source first).
+        const candidates = [];
         for (const a of links) {
             const h = a.getAttribute('href');
-            if (isSourceHref(h)) sourceCandidates.push(h);
+            if (isSourceHref(h)) candidates.push(h);
         }
+        if (candidates.length === 0) return null;
 
-        return pickBestSourceUrl(sourceCandidates);
+        // Group by file hash (last path segment before any query) — if all
+        // candidates share the same hash, just return the first one we found
+        // (DOM order, which on rule34 corresponds to the "original" position).
+        const hashes = new Set();
+        for (const c of candidates) {
+            try {
+                const u = new URL(c, location.href);
+                const last = u.pathname.split('/').filter(Boolean).pop() || '';
+                hashes.add(last.replace(/\.[a-z0-9]+$/i, ''));
+            } catch (_) {}
+        }
+        if (hashes.size === 1) return candidates[0];
+
+        // Different files — use quality ranking strictly as a tiebreaker.
+        return pickBestSourceUrl(candidates);
     }
 
     function findFileUrlInDoc(doc) {
@@ -604,23 +632,25 @@
         root.id = 'r34dw-toolbar';
         root.className = 'r34dw-toolbar';
         root.innerHTML = `
-            <button type="button" class="r34dw-easy-toggle" role="switch" aria-checked="false"
-                    title="Easy-select: тапнуть по работе = выделить" aria-label="Easy-select">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"
-                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <polyline points="4 12 10 18 20 6"/>
-                </svg>
-            </button>
-            <div class="r34dw-toolbar-title">Rule34 DW</div>
+            <div class="r34dw-toolbar-header">
+                <div class="r34dw-toolbar-title">Rule34 DW</div>
+                <button type="button" class="r34dw-easy-toggle" role="switch" aria-checked="false"
+                        title="Easy-select: тапнуть по работе = выделить (вкл/выкл)"
+                        aria-label="Easy-select">
+                    <span class="r34dw-easy-box">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5"
+                             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="4 12 10 18 20 6"/>
+                        </svg>
+                    </span>
+                    <span class="r34dw-easy-label">Easy</span>
+                </button>
+            </div>
             <div class="r34dw-mode-row">
                 <button type="button" class="r34dw-mode-btn" data-mode="solo">Solo</button>
                 <button type="button" class="r34dw-mode-btn" data-mode="multi">Multi</button>
             </div>
             <div class="r34dw-multi-actions">
-                <label class="r34dw-easy-row">
-                    <input type="checkbox" class="r34dw-easy-checkbox">
-                    <span>Тап по работе = выделить</span>
-                </label>
                 <button type="button" class="r34dw-action-btn r34dw-download-selected" disabled>
                     Скачать выбранные (0)
                 </button>
@@ -640,12 +670,10 @@
         const clearBtn   = root.querySelector('.r34dw-clear');
         const progress   = root.querySelector('.r34dw-progress');
         const easyToggle = root.querySelector('.r34dw-easy-toggle');
-        const easyCheck  = root.querySelector('.r34dw-easy-checkbox');
 
         dlBtn.addEventListener('click', () => downloadSelected(dlBtn, progress));
         clearBtn.addEventListener('click', () => ModeState.clearSelected());
         easyToggle.addEventListener('click', () => ModeState.setEasy(!ModeState.easy));
-        easyCheck.addEventListener('change', () => ModeState.setEasy(!!easyCheck.checked));
 
         ModeState.on(() => {
             root.querySelectorAll('.r34dw-mode-btn').forEach(b => {
@@ -657,7 +685,6 @@
             clearBtn.disabled = n === 0;
             easyToggle.classList.toggle('r34dw-active', !!ModeState.easy);
             easyToggle.setAttribute('aria-checked', ModeState.easy ? 'true' : 'false');
-            easyCheck.checked = !!ModeState.easy;
         });
 
         ModeState.applyBodyClass();

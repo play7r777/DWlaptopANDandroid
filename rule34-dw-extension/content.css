@@ -118,7 +118,6 @@ body.r34dw-easyselect span.thumb a { cursor: pointer; }
     flex-direction: column;
     gap: 6px;
     padding: 8px;
-    padding-right: 40px; /* leave room for the top-right easy-select toggle */
     background: rgba(15, 15, 15, 0.85);
     border: 1px solid rgba(255, 255, 255, 0.25);
     border-radius: 10px;
@@ -127,15 +126,21 @@ body.r34dw-easyselect span.thumb a { cursor: pointer; }
     color: #fff;
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
-    max-width: 240px;
+    max-width: 260px;
+}
+.r34dw-toolbar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 2px;
 }
 .r34dw-toolbar-title {
     font-weight: 700;
     font-size: 11px;
     letter-spacing: .04em;
     text-transform: uppercase;
-    opacity: .8;
-    margin-bottom: 2px;
+    opacity: .85;
 }
 .r34dw-mode-row { display: flex; gap: 4px; }
 .r34dw-mode-btn {
@@ -164,57 +169,60 @@ body.r34dw-easyselect span.thumb a { cursor: pointer; }
 }
 body.r34dw-mode-multi .r34dw-multi-actions { display: flex; }
 
-.r34dw-easy-row {
-    display: flex;
+/* Easy-select toggle — sits in the header row, right of the "Rule34 DW" title.
+   Always visible: empty white-bordered square when off, green-filled with a
+   checkmark when on. Acts like a real checkbox so the user immediately sees it. */
+.r34dw-easy-toggle {
+    display: inline-flex;
     align-items: center;
     gap: 6px;
-    font: inherit;
-    cursor: pointer;
-    user-select: none;
-    -webkit-user-select: none;
-    padding: 2px 0;
-}
-.r34dw-easy-row input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    accent-color: #28a050;
-    margin: 0;
-    cursor: pointer;
-}
-
-/* Top-right shortcut toggle inside the toolbar — quick access without opening
-   multi mode controls. Mirrors the checkbox state. */
-.r34dw-easy-toggle {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 26px;
-    height: 26px;
+    padding: 4px 6px 4px 4px;
     border-radius: 6px;
-    border: 1.5px solid rgba(255, 255, 255, 0.55);
-    background: rgba(20, 20, 20, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.05);
     color: #fff;
     cursor: pointer;
-    padding: 0;
-    display: flex;
+    font: inherit;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    transition: background .15s ease, transform .1s ease, border-color .15s ease;
+}
+.r34dw-easy-toggle:hover { background: rgba(255, 255, 255, 0.12); }
+.r34dw-easy-toggle:active { transform: scale(0.96); }
+.r34dw-easy-toggle.r34dw-active {
+    background: rgba(40, 160, 80, 0.2);
+    border-color: rgba(40, 200, 100, 0.95);
+}
+.r34dw-easy-label {
+    font-weight: 700;
+    opacity: .85;
+    pointer-events: none;
+}
+.r34dw-easy-box {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    background: rgba(20, 20, 20, 0.55);
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    transition: background .15s ease, transform .1s ease;
-    z-index: 1;
+    transition: background .15s ease, border-color .15s ease;
+    pointer-events: none;
+    flex: 0 0 auto;
 }
-.r34dw-easy-toggle:hover { background: rgba(40, 110, 220, 0.85); }
-.r34dw-easy-toggle:active { transform: scale(0.92); }
-.r34dw-easy-toggle svg {
-    width: 16px;
-    height: 16px;
+.r34dw-easy-box svg {
+    width: 14px;
+    height: 14px;
     display: none;
     pointer-events: none;
 }
-.r34dw-easy-toggle.r34dw-active {
+.r34dw-easy-toggle.r34dw-active .r34dw-easy-box {
     background: rgba(40, 160, 80, 0.95);
     border-color: #fff;
 }
-.r34dw-easy-toggle.r34dw-active svg { display: block; }
+.r34dw-easy-toggle.r34dw-active .r34dw-easy-box svg { display: block; }
 
 .r34dw-action-btn {
     padding: 7px 10px;
@@ -238,7 +246,8 @@ body:not(.r34dw-mode-multi) .r34dw-thumb-check { display: none !important; }
     .r34dw-thumb-check { width: 26px; height: 26px; }
     .r34dw-thumb-check svg { width: 18px; height: 18px; }
     .r34dw-post-btn { right: 14px; bottom: 14px; padding: 14px 18px; font-size: 17px; }
-    .r34dw-toolbar { top: 8px; right: 8px; padding: 7px; padding-right: 40px; font-size: 13px; max-width: 70vw; }
-    .r34dw-easy-toggle { width: 30px; height: 30px; }
-    .r34dw-easy-toggle svg { width: 18px; height: 18px; }
+    .r34dw-toolbar { top: 8px; right: 8px; padding: 7px; font-size: 13px; max-width: 80vw; }
+    .r34dw-easy-toggle { font-size: 12px; padding: 5px 7px 5px 5px; }
+    .r34dw-easy-box { width: 22px; height: 22px; }
+    .r34dw-easy-box svg { width: 16px; height: 16px; }
 }

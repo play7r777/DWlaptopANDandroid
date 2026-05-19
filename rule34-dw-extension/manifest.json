@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Rule34 DW Button",
-    "version": "1.4.0",
+    "version": "1.4.1",
     "description": "Adds a DW download button (and a Solo/Multi multi-select mode with Easy-select) to rule34.xxx thumbnails and post pages. Always downloads the highest-quality original (Original image/video — never .php). Multi-selection persists across pages, tabs, browser restarts, and successful downloads — only the red Снять выделение button clears it. Robust 429/403 retries with API fallback. Bulk downloads go silently to your Downloads folder.",
     "author": "play3r333",
     "minimum_chrome_version": "88",
