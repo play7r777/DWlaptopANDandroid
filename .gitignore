@@ -1,0 +1,10 @@
+# Built artifacts — regenerated on demand from rule34-dw-extension/
+rule34-dw-extension.zip
+*.zip
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*~
+.vscode/
+.idea/
